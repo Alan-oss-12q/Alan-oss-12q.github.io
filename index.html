@@ -48,6 +48,7 @@ export default function TowerDefenseGame() {
   const lastTimeRef = useRef(0);
   const enemySpawnTimerRef = useRef(0);
   const waveCompleteRef = useRef(false);
+  const canvasRef = useRef(null);
 
   // Initialize game
   const initGame = useCallback(() => {
@@ -97,6 +98,73 @@ export default function TowerDefenseGame() {
     }
     setGameState('playing');
   }, [wave, waveEnemies.length, generateWave]);
+
+  // Draw game
+  const drawGame = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    
+    // Draw path
+    ctx.strokeStyle = PATH_COLOR;
+    ctx.lineWidth = 40;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    INITIAL_PATH.forEach((point, i) => {
+      if (i === 0) {
+        ctx.moveTo(point.x, point.y);
+      } else {
+        ctx.lineTo(point.x, point.y);
+      }
+    });
+    ctx.stroke();
+    
+    // Draw towers
+    towers.forEach(tower => {
+      ctx.fillStyle = tower.color || TOWER_COLORS.basic;
+      ctx.beginPath();
+      ctx.arc(tower.x, tower.y, 15, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Draw range when selected or in idle state
+      if (selectedTower === tower.type || gameState === 'idle') {
+        ctx.strokeStyle = ctx.fillStyle;
+        ctx.globalAlpha = 0.3;
+        ctx.beginPath();
+        ctx.arc(tower.x, tower.y, tower.range, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    });
+    
+    // Draw enemies
+    enemies.forEach(enemy => {
+      ctx.fillStyle = enemy.color;
+      ctx.beginPath();
+      ctx.arc(enemy.x, enemy.y, 12, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Draw health bar
+      const maxHealth = ENEMY_TYPES[enemy.type].health;
+      const healthPercent = enemy.health / maxHealth;
+      
+      ctx.fillStyle = '#374151';
+      ctx.fillRect(enemy.x - 15, enemy.y - 25, 30, 5);
+      ctx.fillStyle = healthPercent > 0.5 ? '#10B981' : healthPercent > 0.25 ? '#F59E0B' : '#EF4444';
+      ctx.fillRect(enemy.x - 15, enemy.y - 25, 30 * healthPercent, 5);
+    });
+    
+    // Draw projectiles
+    projectiles.forEach(projectile => {
+      ctx.fillStyle = '#60A5FA';
+      ctx.beginPath();
+      ctx.arc(projectile.x, projectile.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }, [towers, enemies, projectiles, selectedTower, gameState]);
 
   // Game loop
   const gameLoop = useCallback((currentTime) => {
@@ -212,16 +280,18 @@ export default function TowerDefenseGame() {
       let coinsEarned = 0;
       
       projectiles.forEach(projectile => {
-        const hitEnemy = updatedEnemies.find(enemy => {
+        const hitEnemyIndex = updatedEnemies.findIndex(enemy => {
           const dx = enemy.x - projectile.x;
           const dy = enemy.y - projectile.y;
           return Math.sqrt(dx * dx + dy * dy) < 20;
         });
         
-        if (hitEnemy) {
+        if (hitEnemyIndex !== -1) {
+          const hitEnemy = updatedEnemies[hitEnemyIndex];
           hitEnemy.health -= projectile.damage;
           if (hitEnemy.health <= 0) {
             coinsEarned += hitEnemy.reward;
+            updatedEnemies.splice(hitEnemyIndex, 1);
           }
         }
       });
@@ -230,7 +300,7 @@ export default function TowerDefenseGame() {
         setCoins(prev => prev + coinsEarned);
       }
       
-      return updatedEnemies.filter(enemy => enemy.health > 0);
+      return updatedEnemies;
     });
     
     // Check wave completion
@@ -250,8 +320,11 @@ export default function TowerDefenseGame() {
       setGameState('gameOver');
     }
     
+    // Draw game
+    drawGame();
+    
     gameLoopRef.current = requestAnimationFrame(gameLoop);
-  }, [gameState, enemies, waveEnemies, lives, wave]);
+  }, [gameState, enemies, waveEnemies, lives, wave, drawGame]);
 
   // Handle canvas click for placing towers
   const handleCanvasClick = useCallback((e) => {
@@ -316,6 +389,11 @@ export default function TowerDefenseGame() {
       generateWave(1);
     }
   }, [wave, gameState, generateWave]);
+
+  // Draw game when state changes
+  useEffect(() => {
+    drawGame();
+  }, [towers, enemies, projectiles, selectedTower, gameState, drawGame]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 text-white p-4">
@@ -421,6 +499,7 @@ export default function TowerDefenseGame() {
             <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
               <div className="relative">
                 <canvas
+                  ref={canvasRef}
                   width={GAME_WIDTH}
                   height={GAME_HEIGHT}
                   onClick={handleCanvasClick}
@@ -461,92 +540,6 @@ export default function TowerDefenseGame() {
           </div>
         </div>
       </div>
-      
-      {/* Canvas Drawing */}
-      <style jsx>{`
-        canvas {
-          display: block;
-          margin: 0 auto;
-        }
-      `}</style>
-      
-      <script
-        dangerouslySetInnerHTML={{
-          __html: `
-            const canvas = document.querySelector('canvas');
-            if (canvas) {
-              const ctx = canvas.getContext('2d');
-              const draw = () => {
-                ctx.clearRect(0, 0, ${GAME_WIDTH}, ${GAME_HEIGHT});
-                
-                // Draw path
-                ctx.strokeStyle = '${PATH_COLOR}';
-                ctx.lineWidth = 40;
-                ctx.lineCap = 'round';
-                ctx.lineJoin = 'round';
-                ctx.beginPath();
-                ${INITIAL_PATH.map((point, i) => 
-                  i === 0 ? `ctx.moveTo(${point.x}, ${point.y});` : `ctx.lineTo(${point.x}, ${point.y});`
-                ).join('')}
-                ctx.stroke();
-                
-                // Draw towers
-                ${JSON.stringify(towers)}.forEach(tower => {
-                  ctx.fillStyle = '${TOWER_COLORS.basic}';
-                  if (tower.type === 'cannon') ctx.fillStyle = '${TOWER_COLORS.cannon}';
-                  if (tower.type === 'sniper') ctx.fillStyle = '${TOWER_COLORS.sniper}';
-                  ctx.beginPath();
-                  ctx.arc(tower.x, tower.y, 15, 0, Math.PI * 2);
-                  ctx.fill();
-                  
-                  // Draw range
-                  if (${selectedTower} === tower.type || ${gameState} === 'idle') {
-                    ctx.strokeStyle = ctx.fillStyle;
-                    ctx.globalAlpha = 0.3;
-                    ctx.beginPath();
-                    ctx.arc(tower.x, tower.y, tower.range, 0, Math.PI * 2);
-                    ctx.stroke();
-                    ctx.globalAlpha = 1;
-                  }
-                });
-                
-                // Draw enemies
-                ${JSON.stringify(enemies)}.forEach(enemy => {
-                  ctx.fillStyle = '${ENEMY_TYPES.basic.color}';
-                  if (enemy.type === 'fast') ctx.fillStyle = '${ENEMY_TYPES.fast.color}';
-                  if (enemy.type === 'tank') ctx.fillStyle = '${ENEMY_TYPES.tank.color}';
-                  ctx.beginPath();
-                  ctx.arc(enemy.x, enemy.y, 12, 0, Math.PI * 2);
-                  ctx.fill();
-                  
-                  // Draw health bar
-                  const healthPercent = enemy.health / ${ENEMY_TYPES.basic.health};
-                  if (enemy.type === 'fast') healthPercent = enemy.health / ${ENEMY_TYPES.fast.health};
-                  if (enemy.type === 'tank') healthPercent = enemy.health / ${ENEMY_TYPES.tank.health};
-                  
-                  ctx.fillStyle = '#374151';
-                  ctx.fillRect(enemy.x - 15, enemy.y - 25, 30, 5);
-                  ctx.fillStyle = healthPercent > 0.5 ? '#10B981' : healthPercent > 0.25 ? '#F59E0B' : '#EF4444';
-                  ctx.fillRect(enemy.x - 15, enemy.y - 25, 30 * healthPercent, 5);
-                });
-                
-                // Draw projectiles
-                ${JSON.stringify(projectiles)}.forEach(projectile => {
-                  ctx.fillStyle = '#60A5FA';
-                  ctx.beginPath();
-                  ctx.arc(projectile.x, projectile.y, 4, 0, Math.PI * 2);
-                  ctx.fill();
-                });
-              };
-              
-              // Update drawing when state changes
-              const observer = new MutationObserver(draw);
-              observer.observe(canvas.parentElement, { childList: true, subtree: true });
-              draw();
-            }
-          `
-        }}
-      />
     </div>
   );
 }
