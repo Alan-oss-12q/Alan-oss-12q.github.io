@@ -1,11 +1,552 @@
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Мой первый сайт</title>
-</head>
-<body>
-  <h1>Привет! Это мой сайт!</h1>
-  <p>Я создал его бесплатно с помощью GitHub Pages.</p>
-</body>
-</html>
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Play, Pause, RotateCcw, Coins, Target, Zap } from 'lucide-react';
+
+const GAME_WIDTH = 800;
+const GAME_HEIGHT = 600;
+const CELL_SIZE = 40;
+const PATH_COLOR = '#4B5563';
+const TOWER_COLORS = {
+  basic: '#3B82F6',
+  cannon: '#EF4444',
+  sniper: '#10B981'
+};
+
+const TOWER_TYPES = {
+  basic: { cost: 50, damage: 10, range: 100, fireRate: 1000, color: TOWER_COLORS.basic },
+  cannon: { cost: 100, damage: 25, range: 120, fireRate: 1500, color: TOWER_COLORS.cannon },
+  sniper: { cost: 150, damage: 50, range: 200, fireRate: 2000, color: TOWER_COLORS.sniper }
+};
+
+const ENEMY_TYPES = {
+  basic: { health: 50, speed: 1.5, reward: 10, color: '#F59E0B' },
+  fast: { health: 30, speed: 2.5, reward: 15, color: '#8B5CF6' },
+  tank: { health: 150, speed: 1.0, reward: 25, color: '#DC2626' }
+};
+
+const INITIAL_PATH = [
+  { x: 0, y: 300 },
+  { x: 200, y: 300 },
+  { x: 200, y: 100 },
+  { x: 400, y: 100 },
+  { x: 400, y: 500 },
+  { x: 600, y: 500 },
+  { x: 600, y: 300 },
+  { x: GAME_WIDTH, y: 300 }
+];
+
+export default function TowerDefenseGame() {
+  const [gameState, setGameState] = useState('idle'); // 'idle', 'playing', 'paused', 'gameOver'
+  const [coins, setCoins] = useState(100);
+  const [lives, setLives] = useState(20);
+  const [wave, setWave] = useState(1);
+  const [selectedTower, setSelectedTower] = useState(null);
+  const [towers, setTowers] = useState([]);
+  const [enemies, setEnemies] = useState([]);
+  const [projectiles, setProjectiles] = useState([]);
+  const [waveEnemies, setWaveEnemies] = useState([]);
+  const gameLoopRef = useRef(null);
+  const lastTimeRef = useRef(0);
+  const enemySpawnTimerRef = useRef(0);
+  const waveCompleteRef = useRef(false);
+
+  // Initialize game
+  const initGame = useCallback(() => {
+    setCoins(100);
+    setLives(20);
+    setWave(1);
+    setTowers([]);
+    setEnemies([]);
+    setProjectiles([]);
+    setSelectedTower(null);
+    setGameState('idle');
+    waveCompleteRef.current = false;
+  }, []);
+
+  // Generate wave enemies
+  const generateWave = useCallback((waveNum) => {
+    const enemies = [];
+    const enemyCount = 5 + waveNum * 2;
+    
+    for (let i = 0; i < enemyCount; i++) {
+      let enemyType = 'basic';
+      const rand = Math.random();
+      if (waveNum >= 3 && rand > 0.7) {
+        enemyType = 'fast';
+      } else if (waveNum >= 5 && rand > 0.9) {
+        enemyType = 'tank';
+      }
+      
+      enemies.push({
+        id: Math.random(),
+        type: enemyType,
+        ...ENEMY_TYPES[enemyType],
+        x: INITIAL_PATH[0].x,
+        y: INITIAL_PATH[0].y,
+        pathIndex: 0,
+        health: ENEMY_TYPES[enemyType].health
+      });
+    }
+    
+    setWaveEnemies(enemies);
+  }, []);
+
+  // Start wave
+  const startWave = useCallback(() => {
+    if (waveEnemies.length === 0) {
+      generateWave(wave);
+    }
+    setGameState('playing');
+  }, [wave, waveEnemies.length, generateWave]);
+
+  // Game loop
+  const gameLoop = useCallback((currentTime) => {
+    if (gameState !== 'playing') return;
+    
+    const deltaTime = currentTime - lastTimeRef.current;
+    lastTimeRef.current = currentTime;
+    
+    // Spawn enemies
+    if (waveEnemies.length > 0) {
+      enemySpawnTimerRef.current += deltaTime;
+      if (enemySpawnTimerRef.current >= 1000) {
+        const enemy = waveEnemies[0];
+        setEnemies(prev => [...prev, { ...enemy, id: Math.random() }]);
+        setWaveEnemies(prev => prev.slice(1));
+        enemySpawnTimerRef.current = 0;
+      }
+    }
+    
+    // Move enemies
+    setEnemies(prev => {
+      const updatedEnemies = prev.map(enemy => {
+        if (enemy.pathIndex >= INITIAL_PATH.length - 1) {
+          return enemy;
+        }
+        
+        const target = INITIAL_PATH[enemy.pathIndex + 1];
+        const dx = target.x - enemy.x;
+        const dy = target.y - enemy.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        const moveDistance = enemy.speed * (deltaTime / 16);
+        
+        if (distance <= moveDistance) {
+          return { ...enemy, x: target.x, y: target.y, pathIndex: enemy.pathIndex + 1 };
+        } else {
+          const ratio = moveDistance / distance;
+          return { 
+            ...enemy, 
+            x: enemy.x + dx * ratio, 
+            y: enemy.y + dy * ratio 
+          };
+        }
+      });
+      
+      // Remove enemies that reached the end
+      const filteredEnemies = updatedEnemies.filter(enemy => {
+        if (enemy.pathIndex >= INITIAL_PATH.length - 1) {
+          setLives(prev => prev - 1);
+          return false;
+        }
+        return true;
+      });
+      
+      return filteredEnemies;
+    });
+    
+    // Update towers and fire projectiles
+    setTowers(prev => {
+      const updatedTowers = prev.map(tower => {
+        if (tower.cooldown > 0) {
+          return { ...tower, cooldown: tower.cooldown - deltaTime };
+        }
+        
+        // Find nearest enemy in range
+        const nearestEnemy = enemies.reduce((closest, enemy) => {
+          const dx = enemy.x - tower.x;
+          const dy = enemy.y - tower.y;
+          const distance = Math.sqrt(dx * dx + dy * dy);
+          
+          if (distance <= tower.range && (!closest || distance < closest.distance)) {
+            return { enemy, distance };
+          }
+          return closest;
+        }, null);
+        
+        if (nearestEnemy) {
+          setProjectiles(prev => [...prev, {
+            id: Math.random(),
+            x: tower.x,
+            y: tower.y,
+            targetX: nearestEnemy.enemy.x,
+            targetY: nearestEnemy.enemy.y,
+            damage: tower.damage
+          }]);
+          return { ...tower, cooldown: tower.fireRate };
+        }
+        
+        return tower;
+      });
+      
+      return updatedTowers;
+    });
+    
+    // Update projectiles
+    setProjectiles(prev => {
+      const updatedProjectiles = prev.map(projectile => ({
+        ...projectile,
+        x: projectile.x + (projectile.targetX - projectile.x) * 0.1,
+        y: projectile.y + (projectile.targetY - projectile.y) * 0.1
+      }));
+      
+      // Remove projectiles that reached target
+      return updatedProjectiles.filter(projectile => {
+        const dx = projectile.targetX - projectile.x;
+        const dy = projectile.targetY - projectile.y;
+        return Math.sqrt(dx * dx + dy * dy) > 5;
+      });
+    });
+    
+    // Check projectile hits
+    setEnemies(prevEnemies => {
+      const updatedEnemies = [...prevEnemies];
+      let coinsEarned = 0;
+      
+      projectiles.forEach(projectile => {
+        const hitEnemy = updatedEnemies.find(enemy => {
+          const dx = enemy.x - projectile.x;
+          const dy = enemy.y - projectile.y;
+          return Math.sqrt(dx * dx + dy * dy) < 20;
+        });
+        
+        if (hitEnemy) {
+          hitEnemy.health -= projectile.damage;
+          if (hitEnemy.health <= 0) {
+            coinsEarned += hitEnemy.reward;
+          }
+        }
+      });
+      
+      if (coinsEarned > 0) {
+        setCoins(prev => prev + coinsEarned);
+      }
+      
+      return updatedEnemies.filter(enemy => enemy.health > 0);
+    });
+    
+    // Check wave completion
+    if (waveEnemies.length === 0 && enemies.length === 0 && !waveCompleteRef.current) {
+      waveCompleteRef.current = true;
+      setWave(prev => prev + 1);
+      setTimeout(() => {
+        if (lives > 0) {
+          setGameState('idle');
+          waveCompleteRef.current = false;
+        }
+      }, 2000);
+    }
+    
+    // Check game over
+    if (lives <= 0) {
+      setGameState('gameOver');
+    }
+    
+    gameLoopRef.current = requestAnimationFrame(gameLoop);
+  }, [gameState, enemies, waveEnemies, lives, wave]);
+
+  // Handle canvas click for placing towers
+  const handleCanvasClick = useCallback((e) => {
+    if (gameState === 'playing' || !selectedTower) return;
+    
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    // Check if position is on path
+    const isOnPath = INITIAL_PATH.some((point, i) => {
+      if (i === 0) return false;
+      const prev = INITIAL_PATH[i - 1];
+      const distToLine = Math.abs(
+        (point.y - prev.y) * x - (point.x - prev.x) * y + point.x * prev.y - point.y * prev.x
+      ) / Math.sqrt(Math.pow(point.y - prev.y, 2) + Math.pow(point.x - prev.x, 2));
+      
+      return distToLine < 20;
+    });
+    
+    if (isOnPath) return;
+    
+    // Check if position overlaps with existing tower
+    const overlaps = towers.some(tower => 
+      Math.abs(tower.x - x) < 30 && Math.abs(tower.y - y) < 30
+    );
+    
+    if (overlaps) return;
+    
+    const towerType = TOWER_TYPES[selectedTower];
+    if (coins >= towerType.cost) {
+      setTowers(prev => [...prev, {
+        id: Math.random(),
+        x,
+        y,
+        type: selectedTower,
+        ...towerType,
+        cooldown: 0
+      }]);
+      setCoins(prev => prev - towerType.cost);
+      setSelectedTower(null);
+    }
+  }, [gameState, selectedTower, coins, towers]);
+
+  // Start game loop
+  useEffect(() => {
+    if (gameState === 'playing') {
+      lastTimeRef.current = performance.now();
+      gameLoopRef.current = requestAnimationFrame(gameLoop);
+    }
+    
+    return () => {
+      if (gameLoopRef.current) {
+        cancelAnimationFrame(gameLoopRef.current);
+      }
+    };
+  }, [gameState, gameLoop]);
+
+  // Initialize first wave
+  useEffect(() => {
+    if (wave === 1 && gameState === 'idle') {
+      generateWave(1);
+    }
+  }, [wave, gameState, generateWave]);
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 text-white p-4">
+      <div className="max-w-6xl mx-auto">
+        <div className="text-center mb-6">
+          <h1 className="text-4xl font-bold mb-2 bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
+            Tower Defense
+          </h1>
+          <p className="text-gray-300">Place towers to defend against enemy waves!</p>
+        </div>
+        
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+          {/* Game Stats */}
+          <div className="lg:col-span-1 space-y-4">
+            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+              <div className="flex items-center gap-2 mb-3">
+                <Coins className="w-5 h-5 text-yellow-400" />
+                <span className="text-lg font-semibold">Coins: {coins}</span>
+              </div>
+              <div className="flex items-center gap-2 mb-3">
+                <Target className="w-5 h-5 text-red-400" />
+                <span className="text-lg font-semibold">Lives: {lives}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Zap className="w-5 h-5 text-blue-400" />
+                <span className="text-lg font-semibold">Wave: {wave}</span>
+              </div>
+            </div>
+            
+            {/* Tower Selection */}
+            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+              <h3 className="text-lg font-semibold mb-3">Select Tower</h3>
+              <div className="space-y-2">
+                {Object.entries(TOWER_TYPES).map(([type, data]) => (
+                  <button
+                    key={type}
+                    onClick={() => setSelectedTower(type)}
+                    disabled={coins < data.cost || gameState === 'playing'}
+                    className={`w-full p-3 rounded-lg border transition-all ${
+                      selectedTower === type
+                        ? 'bg-blue-600 border-blue-400'
+                        : 'bg-gray-700 border-gray-600 hover:bg-gray-600'
+                    } ${coins < data.cost ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                  >
+                    <div className="flex justify-between items-center">
+                      <span className="capitalize font-medium">{type}</span>
+                      <span className="text-yellow-400">${data.cost}</span>
+                    </div>
+                    <div className="text-sm text-gray-300 mt-1">
+                      Dmg: {data.damage} | Range: {data.range}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+            
+            {/* Game Controls */}
+            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+              <div className="flex flex-col gap-2">
+                {gameState === 'idle' && (
+                  <button
+                    onClick={startWave}
+                    disabled={waveEnemies.length === 0}
+                    className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed py-2 px-4 rounded-lg font-semibold transition-colors"
+                  >
+                    Start Wave {wave}
+                  </button>
+                )}
+                
+                {gameState === 'playing' && (
+                  <button
+                    onClick={() => setGameState('paused')}
+                    className="w-full bg-yellow-600 hover:bg-yellow-700 py-2 px-4 rounded-lg font-semibold transition-colors"
+                  >
+                    <Pause className="w-5 h-5 inline mr-2" />
+                    Pause
+                  </button>
+                )}
+                
+                {(gameState === 'paused' || gameState === 'gameOver') && (
+                  <button
+                    onClick={() => setGameState('playing')}
+                    className="w-full bg-green-600 hover:bg-green-700 py-2 px-4 rounded-lg font-semibold transition-colors"
+                  >
+                    <Play className="w-5 h-5 inline mr-2" />
+                    Resume
+                  </button>
+                )}
+                
+                <button
+                  onClick={initGame}
+                  className="w-full bg-red-600 hover:bg-red-700 py-2 px-4 rounded-lg font-semibold transition-colors"
+                >
+                  <RotateCcw className="w-5 h-5 inline mr-2" />
+                  Reset Game
+                </button>
+              </div>
+            </div>
+          </div>
+          
+          {/* Game Canvas */}
+          <div className="lg:col-span-3">
+            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+              <div className="relative">
+                <canvas
+                  width={GAME_WIDTH}
+                  height={GAME_HEIGHT}
+                  onClick={handleCanvasClick}
+                  className="border border-gray-600 rounded-lg cursor-crosshair bg-gray-900"
+                />
+                
+                {/* Game Overlay */}
+                {(gameState === 'paused' || gameState === 'gameOver') && (
+                  <div className="absolute inset-0 bg-black bg-opacity-75 flex items-center justify-center rounded-lg">
+                    <div className="text-center">
+                      {gameState === 'paused' && (
+                        <h2 className="text-3xl font-bold mb-4">Game Paused</h2>
+                      )}
+                      {gameState === 'gameOver' && (
+                        <div>
+                          <h2 className="text-3xl font-bold text-red-400 mb-2">Game Over!</h2>
+                          <p className="text-xl mb-4">Final Wave: {wave - 1}</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+                
+                {gameState === 'idle' && waveEnemies.length > 0 && (
+                  <div className="absolute top-4 left-4 bg-black bg-opacity-75 px-4 py-2 rounded-lg">
+                    <p className="text-lg">Ready for Wave {wave}</p>
+                  </div>
+                )}
+              </div>
+              
+              {/* Instructions */}
+              <div className="mt-4 text-sm text-gray-400">
+                <p className="mb-1">• Click on the game area to place selected towers</p>
+                <p className="mb-1">• Towers automatically attack enemies in range</p>
+                <p>• Don't let enemies reach the end!</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      {/* Canvas Drawing */}
+      <style jsx>{`
+        canvas {
+          display: block;
+          margin: 0 auto;
+        }
+      `}</style>
+      
+      <script
+        dangerouslySetInnerHTML={{
+          __html: `
+            const canvas = document.querySelector('canvas');
+            if (canvas) {
+              const ctx = canvas.getContext('2d');
+              const draw = () => {
+                ctx.clearRect(0, 0, ${GAME_WIDTH}, ${GAME_HEIGHT});
+                
+                // Draw path
+                ctx.strokeStyle = '${PATH_COLOR}';
+                ctx.lineWidth = 40;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.beginPath();
+                ${INITIAL_PATH.map((point, i) => 
+                  i === 0 ? `ctx.moveTo(${point.x}, ${point.y});` : `ctx.lineTo(${point.x}, ${point.y});`
+                ).join('')}
+                ctx.stroke();
+                
+                // Draw towers
+                ${JSON.stringify(towers)}.forEach(tower => {
+                  ctx.fillStyle = '${TOWER_COLORS.basic}';
+                  if (tower.type === 'cannon') ctx.fillStyle = '${TOWER_COLORS.cannon}';
+                  if (tower.type === 'sniper') ctx.fillStyle = '${TOWER_COLORS.sniper}';
+                  ctx.beginPath();
+                  ctx.arc(tower.x, tower.y, 15, 0, Math.PI * 2);
+                  ctx.fill();
+                  
+                  // Draw range
+                  if (${selectedTower} === tower.type || ${gameState} === 'idle') {
+                    ctx.strokeStyle = ctx.fillStyle;
+                    ctx.globalAlpha = 0.3;
+                    ctx.beginPath();
+                    ctx.arc(tower.x, tower.y, tower.range, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.globalAlpha = 1;
+                  }
+                });
+                
+                // Draw enemies
+                ${JSON.stringify(enemies)}.forEach(enemy => {
+                  ctx.fillStyle = '${ENEMY_TYPES.basic.color}';
+                  if (enemy.type === 'fast') ctx.fillStyle = '${ENEMY_TYPES.fast.color}';
+                  if (enemy.type === 'tank') ctx.fillStyle = '${ENEMY_TYPES.tank.color}';
+                  ctx.beginPath();
+                  ctx.arc(enemy.x, enemy.y, 12, 0, Math.PI * 2);
+                  ctx.fill();
+                  
+                  // Draw health bar
+                  const healthPercent = enemy.health / ${ENEMY_TYPES.basic.health};
+                  if (enemy.type === 'fast') healthPercent = enemy.health / ${ENEMY_TYPES.fast.health};
+                  if (enemy.type === 'tank') healthPercent = enemy.health / ${ENEMY_TYPES.tank.health};
+                  
+                  ctx.fillStyle = '#374151';
+                  ctx.fillRect(enemy.x - 15, enemy.y - 25, 30, 5);
+                  ctx.fillStyle = healthPercent > 0.5 ? '#10B981' : healthPercent > 0.25 ? '#F59E0B' : '#EF4444';
+                  ctx.fillRect(enemy.x - 15, enemy.y - 25, 30 * healthPercent, 5);
+                });
+                
+                // Draw projectiles
+                ${JSON.stringify(projectiles)}.forEach(projectile => {
+                  ctx.fillStyle = '#60A5FA';
+                  ctx.beginPath();
+                  ctx.arc(projectile.x, projectile.y, 4, 0, Math.PI * 2);
+                  ctx.fill();
+                });
+              };
+              
+              // Update drawing when state changes
+              const observer = new MutationObserver(draw);
+              observer.observe(canvas.parentElement, { childList: true, subtree: true });
+              draw();
+            }
+          `
+        }}
+      />
+    </div>
+  );
+}
